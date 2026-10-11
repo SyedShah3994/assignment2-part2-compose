@@ -1,616 +1,492 @@
-making network 
+\# Docker Compose Multi-Container Assignment (Part 2)
 
 
 
-Command:
+\## Project Overview
 
-docker network create --driver bridge my\_network
 
 
+This project deploys a Flask web application and a PostgreSQL database using Docker Compose. On top of the basic deployment it covers a new feature release (version 2), a database backup and restore strategy, scaling the web service to three instances, and monitoring with cAdvisor, Prometheus and Grafana.
 
-Output:
 
-ce521a0ff5feb077ceb4552f7b68f5c3f1ea7fec51b612eeab3a209052685327
 
+\*\*Technologies:\*\* Docker, Docker Compose, Python (Flask), PostgreSQL 16, Prometheus, Grafana, cAdvisor.
 
 
-Command:
 
-docker network ls
+\## Project Structure
 
 
 
-Output:
+```
 
-NETWORK ID     NAME         DRIVER    SCOPE
+assignment2-part2-compose/
 
-9946419e89ee   bridge       bridge    local
+|-- web/
 
-d9a00e5d6a18   host         host      local
+|   |-- Dockerfile
 
-ce521a0ff5fe   my\_network   bridge    local
+|   |-- app.py
 
-d737ea71d70c   none         null      local
+|   |-- requirements.txt
 
+|-- db/
 
+|   |-- Dockerfile
 
+|-- backups/
 
+|   |-- backup.sql
 
-making nginx\_container 
+|-- monitoring/
 
+|   |-- prometheus.yml
 
+|-- screenshots/
 
-Command:
+|-- docker-compose.yml
 
-docker run -d --name nginx\_container --network my\_network -p 8080:80 nginx
+|-- README.md
 
+```
 
 
-Output:
 
-8e9660781379c2082968bd2bc89a8c775295faa5f1583f03f6588d9eb000421f
+\## 1. Web Application Dockerfile
 
 
 
-Command:
+\*\*Description:\*\* This Dockerfile builds the image for the Flask web application. It starts from the small `python:3.12-slim` image, installs the dependencies listed in `requirements.txt`, copies `app.py`, and starts the app on port 5000 when the container starts.
 
-docker ps
 
 
+\*\*File:\*\* `web/requirements.txt`
 
-Output:
 
-CONTAINER ID   IMAGE     COMMAND                  CREATED          STATUS          PORTS                                     NAMES
 
-8e9660781379   nginx     "/docker-entrypoint.…"   16 seconds ago   Up 15 seconds   0.0.0.0:8080->80/tcp, \[::]:8080->80/tcp   nginx\_container
+```
 
+flask
 
+psycopg2-binary
 
+prometheus-client
 
+```
 
-&#x20;nginx page verifying
 
 
+\*\*File:\*\* `web/Dockerfile`
 
-Command:
 
-curl.exe -I http://localhost:8080
 
+```dockerfile
 
+\# Base image: small Python image
 
-Output:
+FROM python:3.12-slim
 
-HTTP/1.1 200 OK
 
-Server: nginx/1.31.6
 
-Date: Sat, 10 Oct 2026 16:53:54 GMT
+\# Working directory inside the container
 
-Content-Type: text/html
+WORKDIR /app
 
-Content-Length: 896
 
-Last-Modified: Tue, 15 Sep 2026 12:54:15 GMT
 
-Connection: keep-alive
+\# Copy only requirements first so the build cache can be reused
 
-ETag: "6aa93ff7-380"
+COPY requirements.txt .
 
-Accept-Ranges: bytes
 
 
+\# Install dependencies
 
-Screenshot: screenshots/nginx-8080.png
+RUN pip install --no-cache-dir -r requirements.txt
 
 
 
+\# Copy the application code
 
+COPY app.py .
 
-&#x20;making httpd\_container 
 
 
+\# The app listens on port 5000
 
-Command:
+EXPOSE 5000
 
-docker run -d --name httpd\_container --network my\_network -p 8081:80 httpd
 
 
+\# Start the app when the container starts
 
-Output:
+CMD \["python", "app.py"]
 
-1191b2c697d9ba584e0066000101ca4e5e0a296e6c3775cabc802ceb4f2d025e
+```
 
 
 
-Command:
+\*\*File:\*\* `web/app.py` (original version)
 
-docker ps
 
 
+The app has these routes:
 
-Output:
 
-CONTAINER ID   IMAGE     COMMAND              CREATED          STATUS          PORTS                                     NAMES
 
-1191b2c697d9   httpd     "httpd-foreground"   21 seconds ago   Up 20 seconds   0.0.0.0:8081->80/tcp, \[::]:8081->80/tcp   httpd\_container
+\- `/` returns "Hello, World!"
 
-8e9660781379   nginx     "/docker-entrypoint.…"   13 minutes ago   Up 13 minutes   0.0.0.0:8080->80/tcp, \[::]:8080->80/tcp   nginx\_container
+\- `/whoami` returns the ID of the container that served the request (used to prove scaling)
 
+\- `/db` connects to the database and returns the PostgreSQL version (used to prove the two services are connected)
 
+\- `/metrics` exposes Prometheus metrics, including the `web\_requests\_total` counter
 
-httpd page verifying
 
 
+```python
 
-Command:
+import os
 
-curl.exe -I http://localhost:8081
+import socket
 
+from flask import Flask, Response
 
+import psycopg2
 
-Output:
+from prometheus\_client import Counter, generate\_latest, CONTENT\_TYPE\_LATEST
 
-HTTP/1.1 200 OK
 
-Date: Sat, 10 Oct 2026 17:09:07 GMT
 
-Server: Apache/2.4.69 (Unix)
+app = Flask(\_\_name\_\_)
 
-Last-Modified: Fri, 07 Nov 2025 08:23:08 GMT
 
-ETag: "bf-642fce432f300"
 
-Accept-Ranges: bytes
+REQUESTS = Counter("web\_requests\_total", "Total requests", \["endpoint"])
 
-Content-Length: 191
 
-Content-Type: text/html
 
 
 
-Screenshot: screenshots/httpd-8081.png
+@app.route("/")
 
+def hello():
 
+&#x20;   REQUESTS.labels("/").inc()
 
-&#x20;docker network inspect
+&#x20;   return "Hello, World!"
 
 
 
-Command:
 
-docker network inspect my\_network
 
+@app.route("/whoami")
 
+def whoami():
 
-Output:
+&#x20;   REQUESTS.labels("/whoami").inc()
 
+&#x20;   return f"Served by container: {socket.gethostname()}"
 
 
 
 
-Findings:
 
-\- Driver: bridge, Scope: local
+@app.route("/db")
 
-\- Subnet: 172.18.0.0/16
+def db\_check():
 
-\- Gateway: 172.18.0.1
+&#x20;   try:
 
+&#x20;       conn = psycopg2.connect(
 
+&#x20;           host=os.environ.get("DB\_HOST", "db"),
 
-&#x20; - nginx\_container, IPv4 Address: 172.18.0.2/16
+&#x20;           dbname=os.environ.get("DB\_NAME", "appdb"),
 
-&#x20; - httpd\_container, IPv4 Address: 172.18.0.3/16
+&#x20;           user=os.environ.get("DB\_USER", "appuser"),
 
+&#x20;           password=os.environ.get("DB\_PASSWORD", "apppass"),
 
+&#x20;           connect\_timeout=3,
 
-Removing and stoping nginx\_container 
+&#x20;       )
 
+&#x20;       cur = conn.cursor()
 
+&#x20;       cur.execute("SELECT version();")
 
-Command:
+&#x20;       version = cur.fetchone()\[0]
 
-docker stop nginx\_container
+&#x20;       conn.close()
 
+&#x20;       return f"Database connected: {version}"
 
+&#x20;   except Exception as e:
 
-Output:
+&#x20;       return f"Database connection FAILED: {e}", 500
 
-nginx\_container
 
 
 
-Command:
 
-docker rm nginx\_container
+@app.route("/metrics")
 
+def metrics():
 
+&#x20;   return Response(generate\_latest(), mimetype=CONTENT\_TYPE\_LATEST)
 
-Output:
 
-nginx\_container
 
 
 
-Command:
+if \_\_name\_\_ == "\_\_main\_\_":
 
-docker ps -a
+&#x20;   app.run(host="0.0.0.0", port=5000)
 
+```
 
 
-Output:
 
-CONTAINER ID   IMAGE     COMMAND              CREATED          STATUS          PORTS                                     NAMES
+\## 2. Database Dockerfile
 
-1191b2c697d9   httpd     "httpd-foreground"   19 minutes ago   Up 19 minutes   0.0.0.0:8081->80/tcp, \[::]:8081->80/tcp   httpd\_container
 
 
+\*\*Description:\*\* This Dockerfile is based on the official PostgreSQL 16 image. The database user, password and database name are set with environment variables. (These credentials are only for this assignment; a real project should use secrets.)
 
-\[
 
-&#x20;   {
 
-&#x20;       "Name": "my\_network",
+\*\*File:\*\* `db/Dockerfile`
 
-&#x20;       "Id": "ce521a0ff5feb077ceb4552f7b68f5c3f1ea7fec51b612eeab3a209052685327",
 
-&#x20;       "Created": "2026-10-10T16:32:06.037244385Z",
 
-&#x20;       "Scope": "local",
+```dockerfile
 
-&#x20;       "Driver": "bridge",
+\# Official PostgreSQL image
 
-&#x20;       "EnableIPv4": true,
+FROM postgres:16
 
-&#x20;       "EnableIPv6": false,
 
-&#x20;       "IPAM": {
 
-&#x20;           "Driver": "default",
+\# Database user, password and database name
 
-&#x20;           "Options": {},
+ENV POSTGRES\_USER=appuser
 
-&#x20;           "Config": \[
+ENV POSTGRES\_PASSWORD=apppass
 
-&#x20;               {
+ENV POSTGRES\_DB=appdb
 
-&#x20;                   "Subnet": "172.18.0.0/16",
 
-&#x20;                   "Gateway": "172.18.0.1"
 
-&#x20;               }
+\# Default PostgreSQL port
 
-&#x20;           ]
+EXPOSE 5432
 
-&#x20;       },
+```
 
-&#x20;       "Internal": false,
 
-&#x20;       "Attachable": false,
 
-&#x20;       "Ingress": false,
+\## 3. docker-compose.yml
 
-&#x20;       "ConfigFrom": {
 
-&#x20;           "Network": ""
 
-&#x20;       },
+\*\*Description:\*\* The Compose file defines two services: `web` (the Flask app) and `db` (PostgreSQL). Both are attached to a custom bridge network called `app\_network`, so the web app can reach the database simply by the service name `db`. The named volume `db\_data` keeps the database files outside the container, and the host folder `./backups` is mounted into the database container as `/backups`. The web service publishes a port range (`8000-8010`) so that every scaled instance gets its own free host port.
 
-&#x20;       "ConfigOnly": false,
 
-&#x20;       "Options": {
 
-&#x20;           "com.docker.network.enable\_ipv4": "true",
+\*\*File:\*\* `docker-compose.yml` (the monitoring services were added later, see Section 8)
 
-&#x20;           "com.docker.network.enable\_ipv6": "false"
 
-&#x20;       },
 
-&#x20;       "Labels": {},
+```yaml
 
-&#x20;       "Containers": {
+services:
 
-&#x20;           "1191b2c697d9ba584e0066000101ca4e5e0a296e6c3775cabc802ceb4f2d025e": {
+&#x20; web:
 
-&#x20;               "Name": "httpd\_container",
+&#x20;   build: ./web
 
-&#x20;               "EndpointID": "dd8664950bcb49cfe983e04c985944c85ae6a897ab7ebaaa09d8aed24773341f",
+&#x20;   ports:
 
-&#x20;               "MacAddress": "92:5a:16:08:7f:a4",
+&#x20;     - "8000-8010:5000"
 
-&#x20;               "IPv4Address": "172.18.0.3/16",
+&#x20;   environment:
 
-&#x20;               "IPv6Address": ""
+&#x20;     - DB\_HOST=db
 
-&#x20;           },
+&#x20;     - DB\_NAME=appdb
 
-&#x20;           "8e9660781379c2082968bd2bc89a8c775295faa5f1583f03f6588d9eb000421f": {
+&#x20;     - DB\_USER=appuser
 
-&#x20;               "Name": "nginx\_container",
+&#x20;     - DB\_PASSWORD=apppass
 
-&#x20;               "EndpointID": "3035bc2c2c735f80ac563f35b8d00720c3b30e9ac3bbca74772684b7cc809b31",
+&#x20;   depends\_on:
 
-&#x20;               "MacAddress": "52:db:11:7a:de:48",
+&#x20;     - db
 
-&#x20;               "IPv4Address": "172.18.0.2/16",
+&#x20;   networks:
 
-&#x20;               "IPv6Address": ""
+&#x20;     - app\_network
 
-&#x20;           }
 
-&#x20;       },
 
-&#x20;       "Status": {
+&#x20; db:
 
-&#x20;           "IPAM": {
+&#x20;   build: ./db
 
-&#x20;               "Subnets": {
+&#x20;   volumes:
 
-&#x20;                   "172.18.0.0/16": {
+&#x20;     - db\_data:/var/lib/postgresql/data
 
-&#x20;                       "IPsInUse": 5,
+&#x20;     - ./backups:/backups
 
-&#x20;                       "DynamicIPsAvailable": 65531
+&#x20;   networks:
 
-&#x20;                   }
+&#x20;     - app\_network
 
-&#x20;               }
 
-&#x20;           }
 
-&#x20;       }
+volumes:
 
-&#x20;   }
+&#x20; db\_data:
 
-]
 
 
+networks:
 
+&#x20; app\_network:
 
+```
 
-making nginx\_container\_2 
 
 
+\## 4. docker compose up
 
-Command:
 
-docker run -d --name nginx\_container\_2 --network my\_network -p 8082:80 nginx
 
+\*\*Description:\*\* This command builds both images (web and db) and starts both containers in the background. Newer Docker versions use `docker compose up` (with a space) instead of the old `docker-compose up`; both do the same job.
 
 
-Output:
 
-d7f086eddf4abeba37a73d6726290b054cb0bc04f135ebda0027f087f6ba8879
+\*\*Command:\*\* build and start the services
 
 
 
-Command:
+```
 
-docker ps
+docker compose up -d --build
 
+```
 
 
-Output:
 
-CONTAINER ID   IMAGE     COMMAND                  CREATED          STATUS          PORTS                                     NAMES
+\*\*Output:\*\*
 
-d7f086eddf4a   nginx     "/docker-entrypoint.…"   11 seconds ago   Up 11 seconds   0.0.0.0:8082->80/tcp, \[::]:8082->80/tcp   nginx\_container\_2
 
-1191b2c697d9   httpd     "httpd-foreground"       23 minutes ago   Up 23 minutes   0.0.0.0:8081->80/tcp, \[::]:8081->80/tcp   httpd\_container
 
+```
 
+\[+] up 6/6
 
-verifying nginx\_container\_2 page 
+&#x20;✔ Image assignment2-part2-compose-db            Built     41.0s
 
+&#x20;✔ Image assignment2-part2-compose-web           Built     41.1s
 
+&#x20;✔ Network assignment2-part2-compose\_app\_network Created   0.0s
 
-Command:
+&#x20;✔ Volume assignment2-part2-compose\_db\_data      Created   0.0s
 
-curl.exe -I http://localhost:8082
+&#x20;✔ Container assignment2-part2-compose-db-1      Started   0.6s
 
+&#x20;✔ Container assignment2-part2-compose-web-1     Started   0.4s
 
+```
 
-Output:
 
-HTTP/1.1 200 OK
 
-Server: nginx/1.31.6
+\*\*Command:\*\* check the state of the services
 
-Date: Sat, 10 Oct 2026 17:24:37 GMT
 
-Content-Type: text/html
 
-Content-Length: 896
-
-Last-Modified: Tue, 15 Sep 2026 12:54:15 GMT
-
-Connection: keep-alive
-
-ETag: "6aa93ff7-380"
-
-Accept-Ranges: bytes
-
-
-
-Screenshot: screenshots/nginx-8082.png
-
-
-
-docker container ls 
-
-
-
-Command:
-
-docker container ls
-
-
-
-Output:
-
-CONTAINER ID   IMAGE     COMMAND                  CREATED          STATUS          PORTS                                     NAMES
-
-d7f086eddf4a   nginx     "/docker-entrypoint.…"   6 minutes ago    Up 6 minutes    0.0.0.0:8082->80/tcp, \[::]:8082->80/tcp   nginx\_container\_2
-
-1191b2c697d9   httpd     "httpd-foreground"       29 minutes ago   Up 29 minutes   0.0.0.0:8081->80/tcp, \[::]:8081->80/tcp   httpd\_container
-
-
-
-
-
-===== Step 3.11: Stopping and removing all  containers 
-
-
-
-Command:
-
-docker stop httpd\_container nginx\_container\_2
-
-
-
-Output:
-
-httpd\_container
-
-nginx\_container\_2
-
-
-
-Command:
-
-docker rm httpd\_container nginx\_container\_2
-
-
-
-Output:
-
-httpd\_container
-
-nginx\_container\_2
-
-
-
-Command:
-
-docker container ls -a
-
-
-
-Output:
-
-CONTAINER ID   IMAGE     COMMAND   CREATED   STATUS    PORTS     NAMES
-
-
-
-Cleanup network
-
-
-
-Note: my\_network ek galat paste ki wajah se pehle hi delete ho chuka tha, is liye usay dobara banaya aur phir remove kiya, taake command ka sahi output dikhe.
-
-
-
-Command:
-
-docker network create --driver bridge my\_network
-
-
-
-Output:
-
-8d56cf3e5d4461849d0ae09e579b7e67646bca8129c1f49e4ea9a7e315a52ac0
-
-
-
-Command:
-
-docker network rm my\_network
-
-
-
-Output:
-
-my\_network
-
-
-
-Command:
-
-docker network ls
-
-
-
-Output:
-
-NETWORK ID     NAME      DRIVER    SCOPE
-
-662b0a746144   bridge    bridge    local
-
-d9a00e5d6a18   host      host      local
-
-d737ea71d70c   none      null      local
-
-
-
-
-
-Command:
+```
 
 docker compose ps
 
-
-
-Output:
-
-NAME                            IMAGE                         COMMAND                  SERVICE   CREATED         STATUS         PORTS
-
-assignment2-part2-compose-db-1  assignment2-part2-compose-db  "docker-entrypoint.s…"   db        3 minutes ago   Up 3 minutes   5432/tcp
-
-assignment2-part2-compose-web-1 assignment2-part2-compose-web "python app.py"          web       3 minutes ago   Up 3 minutes   0.0.0.0:8000->5000/tcp, \[::]:8000->5000/tcp
+```
 
 
 
+\*\*Output:\*\*
 
 
-Command:
+
+```
+
+NAME                              IMAGE                          COMMAND                  SERVICE   STATUS         PORTS
+
+assignment2-part2-compose-db-1    assignment2-part2-compose-db   "docker-entrypoint.s…"   db        Up 3 minutes   5432/tcp
+
+assignment2-part2-compose-web-1   assignment2-part2-compose-web  "python app.py"          web       Up 3 minutes   0.0.0.0:8000->5000/tcp, \[::]:8000->5000/tcp
+
+```
+
+
+
+\*\*Command:\*\* show the logs of both services
+
+
+
+```
 
 docker compose logs
 
+```
 
 
-Output 
+
+\*\*Output (important part):\*\*
+
+
+
+```
 
 web-1  |  \* Serving Flask app 'app'
 
-web-1  |  \* Debug mode: off
-
-web-1  | WARNING: This is a development server. Do not use it in a production deployment. Use a production WSGI server instead.
-
 web-1  |  \* Running on all addresses (0.0.0.0)
-
-web-1  |  \* Running on http://127.0.0.1:5000
 
 web-1  |  \* Running on http://172.18.0.3:5000
 
-web-1  | Press CTRL+C to quit
-
 db-1   | PostgreSQL init process complete; ready for start up.
 
-db-1   | 2026-10-10 20:35:58.121 UTC \[1] LOG:  starting PostgreSQL 16.15 (Debian 16.15-1.pgdg13+2) on x86\_64-pc-linux-gnu, compiled by gcc (Debian 14.2.0-19) 14.2.0, 64-bit
+db-1   | LOG:  listening on IPv4 address "0.0.0.0", port 5432
 
-db-1   | 2026-10-10 20:35:58.122 UTC \[1] LOG:  listening on IPv4 address "0.0.0.0", port 5432
+db-1   | LOG:  database system is ready to accept connections
 
-db-1   | 2026-10-10 20:35:58.131 UTC \[1] LOG:  database system is ready to accept connections
+```
 
 
 
-Command:
+The Flask app is running on port 5000 and the database is ready to accept connections.
+
+
+
+\*\*Command:\*\* check that the database is running
+
+
+
+```
 
 docker compose exec db psql -U appuser -d appdb -c "SELECT version();"
 
+```
 
 
-Output:
+
+\*\*Output:\*\*
+
+
+
+```
 
 &#x20;                                                   version
 
@@ -620,35 +496,95 @@ Output:
 
 (1 row)
 
+```
+
+
+
+\*\*Screenshots:\*\* `http://localhost:8000` shows "Hello, World!", and `http://localhost:8000/db` shows "Database connected: PostgreSQL 16...", which proves that the web and db services are connected over the same network.
+
+
+
+!\[hello v1](screenshots/hello-v1.png)
+
+
+
+!\[db connected](screenshots/db-connected.png)
+
+
+
+\## 5. New Feature (Version 2)
+
+
+
+\*\*Description:\*\* Both the Dockerfile and `app.py` were modified. A new environment variable `APP\_MESSAGE` was added to `web/Dockerfile`, and the `/` route in `web/app.py` now reads its message from that variable. A new `/about` page was also added.
+
+
+
+\*\*Change in `web/Dockerfile` (added before `EXPOSE 5000`):\*\*
+
+
+
+```dockerfile
+
+\# New feature: environment variable for a custom welcome message
+
+ENV APP\_MESSAGE="Hello, World! - Version 2 is live"
+
+```
+
+
+
+\*\*Change in `web/app.py`:\*\*
+
+
+
+```python
+
+@app.route("/")
+
+def hello():
+
+&#x20;   REQUESTS.labels("/").inc()
+
+&#x20;   return os.environ.get("APP\_MESSAGE", "Hello, World!")
 
 
 
 
-Screenshots: screenshots/hello-v1.png, screenshots/db-connected.png
+
+@app.route("/about")
+
+def about():
+
+&#x20;   REQUESTS.labels("/about").inc()
+
+&#x20;   return "About page: this is version 2 of the Docker Compose assignment."
+
+```
 
 
 
-
-
-===== Step 4.5: Naya feature (Version 2) aur redeploy =====
-
-
-
-Changes:
-
-\- web/Dockerfile mein nayi line: ENV APP\_MESSAGE="Hello, World! - Version 2 is live"
-
-\- web/app.py mein: "/" ab APP\_MESSAGE environment variable se message dikhata hai, aur naya /about route add kiya
+\*\*Redeploy commands:\*\*
 
 
 
-Command:
+\*\*Command:\*\* rebuild only the web image with the new changes
+
+
+
+```
 
 docker compose build web
 
+```
 
 
-Output:
+
+\*\*Output:\*\*
+
+
+
+```
 
 \[+] Building 2.1s (13/13) FINISHED
 
@@ -658,15 +594,27 @@ Output:
 
 &#x20;✔ Image assignment2-part2-compose-web Built    2.3s
 
+```
 
 
-Command:
+
+\*\*Command:\*\* recreate and start only the web container (the database is not touched)
+
+
+
+```
 
 docker compose up -d web
 
+```
 
 
-Output:
+
+\*\*Output:\*\*
+
+
+
+```
 
 \[+] up 2/2
 
@@ -674,17 +622,27 @@ Output:
 
 &#x20;✔ Container assignment2-part2-compose-web-1 Started   3.6s
 
+```
 
 
 
+\*\*Command:\*\* confirm that the web service is up again
 
-Command:
+
+
+```
 
 docker compose ps
 
+```
 
 
-Output:
+
+\*\*Output:\*\*
+
+
+
+```
 
 NAME                              IMAGE                          COMMAND                  SERVICE   CREATED          STATUS          PORTS
 
@@ -692,59 +650,107 @@ assignment2-part2-compose-db-1    assignment2-part2-compose-db   "docker-entrypo
 
 assignment2-part2-compose-web-1   assignment2-part2-compose-web  "python app.py"          web       14 seconds ago   Up 10 seconds   0.0.0.0:8001->5000/tcp, \[::]:8001->5000/tcp
 
+```
 
 
 
-
-Screenshots: screenshots/hello-v2.png, screenshots/about-v2.png
-
+The database container (`db-1`) kept running; only the web container was recreated. Docker assigned host port 8001 this time (a free port from the 8000-8010 range), so the new version was opened at `localhost:8001`.
 
 
 
+\*\*Screenshots:\*\* `/` now shows "Hello, World! - Version 2 is live", and the new `/about` page is available.
 
 
 
-&#x20;Database backup strategy 
+!\[hello v2](screenshots/hello-v2.png)
 
 
 
+!\[about v2](screenshots/about-v2.png)
 
 
 
+\## 6. Database Backup Strategy
 
-Command:
+
+
+\*\*What the volume does:\*\* The named volume `db\_data` stores the database files (`/var/lib/postgresql/data`) outside the container, in Docker's own storage. If the container is deleted or recreated, the data survives. However, `docker compose down -v` also deletes the volume, so a separate backup file is needed as well.
+
+
+
+\*\*What the backup command does:\*\* `pg\_dump` writes a full copy of the database into a `.sql` file. The host folder `./backups` is mounted at `/backups` inside the database container, so the backup file also appears in the `backups` folder on the host and stays safe even if the volume is deleted. (Optional: the backup command can be scheduled to run daily with Windows Task Scheduler to get periodic backups.)
+
+
+
+\*\*Step 1: create test data\*\*
+
+
+
+\*\*Command:\*\* create a table called `notes`
+
+
+
+```
 
 docker compose exec db psql -U appuser -d appdb -c "CREATE TABLE notes (id SERIAL PRIMARY KEY, text VARCHAR(100));"
 
+```
 
 
-Output:
+
+\*\*Output:\*\*
+
+
+
+```
 
 CREATE TABLE
 
+```
 
 
 
-
-Command:
-
-docker compose exec -T db psql -U appuser -d appdb -c "INSERT INTO notes (text) VALUES ('first note'), ('second note');"
+\*\*Command:\*\* insert two rows
 
 
 
-Output:
+```
+
+docker compose exec db psql -U appuser -d appdb -c "INSERT INTO notes (text) VALUES ('first note'), ('second note');"
+
+```
+
+
+
+\*\*Output:\*\*
+
+
+
+```
 
 INSERT 0 2
 
-
-
-Command:
-
-docker compose exec -T db psql -U appuser -d appdb -c "SELECT \* FROM notes;"
+```
 
 
 
-Output:
+\*\*Command:\*\* show the rows
+
+
+
+```
+
+docker compose exec db psql -U appuser -d appdb -c "SELECT \* FROM notes;"
+
+```
+
+
+
+\*\*Output:\*\*
+
+
+
+```
 
 &#x20;id |    text
 
@@ -756,31 +762,47 @@ Output:
 
 (2 rows)
 
-
-
-Backup lena:
+```
 
 
 
-Command:
+\*\*Step 2: take a backup\*\*
+
+
+
+\*\*Command:\*\* dump the whole database to `/backups/backup.sql` (the redirect is placed inside `sh -c` because redirecting with `>` directly in PowerShell would save the file in UTF-16 and the restore would fail)
+
+
+
+```
 
 docker compose exec -T db sh -c "pg\_dump -U appuser appdb > /backups/backup.sql"
 
-
-
-Output:
-
-(koi output nahi, file ban gayi)
+```
 
 
 
-Command:
+\*\*Output:\*\* none (the file is created)
+
+
+
+\*\*Command:\*\* confirm that the backup file exists
+
+
+
+```
 
 dir backups
 
+```
 
 
-Output:
+
+\*\*Output:\*\*
+
+
+
+```
 
 Mode                 LastWriteTime         Length Name
 
@@ -788,21 +810,31 @@ Mode                 LastWriteTime         Length Name
 
 \-a----        10/11/2026   2:16 AM           2013 backup.sql
 
+```
 
 
 
-
-Disaster simulate karna (data ura diya):
-
+\*\*Step 3: simulate a disaster (delete all data)\*\*
 
 
-Command:
+
+\*\*Command:\*\* remove the containers together with their volumes (the data is lost, the backup file on the host is safe)
+
+
+
+```
 
 docker compose down -v
 
+```
 
 
-Output:
+
+\*\*Output:\*\*
+
+
+
+```
 
 \[+] down 4/4
 
@@ -814,15 +846,27 @@ Output:
 
 &#x20;✔ Volume assignment2-part2-compose\_db\_data      Removed   0.0s
 
+```
 
 
-Command:
+
+\*\*Command:\*\* start everything again (the database is now empty)
+
+
+
+```
 
 docker compose up -d
 
+```
 
 
-Output:
+
+\*\*Output:\*\*
+
+
+
+```
 
 \[+] up 4/4
 
@@ -834,15 +878,27 @@ Output:
 
 &#x20;✔ Container assignment2-part2-compose-web-1     Started   0.4s
 
-
-
-Command:
-
-docker compose exec -T db psql -U appuser -d appdb -c "SELECT \* FROM notes;"
+```
 
 
 
-Output:
+\*\*Command:\*\* try to read the table (it no longer exists, the data is gone)
+
+
+
+```
+
+docker compose exec db psql -U appuser -d appdb -c "SELECT \* FROM notes;"
+
+```
+
+
+
+\*\*Output:\*\*
+
+
+
+```
 
 ERROR:  relation "notes" does not exist
 
@@ -850,21 +906,31 @@ LINE 1: SELECT \* FROM notes;
 
 &#x20;                     ^
 
+```
 
 
 
-
-Restore karna (backup se data wapas laana):
-
+\*\*Step 4: restore test\*\*
 
 
-Command:
+
+\*\*Command:\*\* restore the data from the backup file
+
+
+
+```
 
 docker compose exec -T db sh -c "psql -U appuser -d appdb < /backups/backup.sql"
 
+```
 
 
-Output:
+
+\*\*Output:\*\*
+
+
+
+```
 
 SET
 
@@ -924,15 +990,27 @@ COPY 2
 
 ALTER TABLE
 
-
-
-Command:
-
-docker compose exec -T db psql -U appuser -d appdb -c "SELECT \* FROM notes;"
+```
 
 
 
-Output:
+\*\*Command:\*\* check the table again (both rows are back, so the restore was successful)
+
+
+
+```
+
+docker compose exec db psql -U appuser -d appdb -c "SELECT \* FROM notes;"
+
+```
+
+
+
+\*\*Output:\*\*
+
+
+
+```
 
 &#x20;id |    text
 
@@ -944,23 +1022,35 @@ Output:
 
 (2 rows)
 
-
-
-===== Step 4.7: Scaling strategy =====
-
-
-
-Note: assignment mein docker-compose scale likha hai. Naye Docker Compose mein woh command hata di gayi hai, us ki jagah --scale flag hai jo wahi kaam karta hai.
+```
 
 
 
-Command:
+\## 7. Scaling Strategy
+
+
+
+\*\*Note:\*\* The assignment mentions `docker-compose scale`. In newer versions of Docker Compose that command has been removed and replaced by the `--scale` flag, which does the same job. The web service publishes the port range `8000-8010:5000` in the Compose file, so each instance gets its own free host port.
+
+
+
+\*\*Command:\*\* run three instances of the web service
+
+
+
+```
 
 docker compose up -d --scale web=3
 
+```
 
 
-Output:
+
+\*\*Output:\*\*
+
+
+
+```
 
 \[+] up 4/4
 
@@ -972,17 +1062,27 @@ Output:
 
 &#x20;✔ Container assignment2-part2-compose-web-2 Started   0.4s
 
+```
 
 
 
+\*\*Command:\*\* show the containers (three web containers, each with its own host port)
 
-Command:
+
+
+```
 
 docker compose ps
 
+```
 
 
-Output:
+
+\*\*Output:\*\*
+
+
+
+```
 
 NAME                              IMAGE                          COMMAND                  SERVICE   CREATED          STATUS          PORTS
 
@@ -994,19 +1094,31 @@ assignment2-part2-compose-web-2   assignment2-part2-compose-web  "python app.py"
 
 assignment2-part2-compose-web-3   assignment2-part2-compose-web  "python app.py"          web       7 seconds ago    Up 6 seconds    0.0.0.0:8004->5000/tcp, \[::]:8004->5000/tcp
 
+```
 
 
 
+\*\*Verification:\*\* the `/whoami` page returns the ID of the container that served the request. Calling it on all three ports and getting three different IDs proves that the three instances are separate containers.
 
 
 
-Command:
+\*\*Command:\*\* call `/whoami` on every instance
+
+
+
+```
 
 8002..8004 | ForEach-Object { "Port $\_ -> " + (curl.exe -s "http://localhost:$\_/whoami") }
 
+```
 
 
-Output:
+
+\*\*Output:\*\*
+
+
+
+```
 
 Port 8002 -> Served by container: dd3fbe5489ce
 
@@ -1014,71 +1126,317 @@ Port 8003 -> Served by container: 10b1a7b46ee7
 
 Port 8004 -> Served by container: 939182b6b7af
 
+```
 
 
 
+\*\*Screenshots:\*\* the three instances in the browser.
 
 
 
-Screenshots: screenshots/scale-8002.png, screenshots/scale-8003.png, screenshots/scale-8004.png
+!\[scale 8002](screenshots/scale-8002.png)
 
 
 
-NAME                                  SERVICE      STATUS                      PORTS
-
-assignment2-part2-compose-cadvisor-1  cadvisor     Up 5 minutes (healthy)      0.0.0.0:8080->8080/tcp, \[::]:8080->8080/tcp
-
-assignment2-part2-compose-db-1        db           Up 20 hours                 5432/tcp
-
-assignment2-part2-compose-grafana-1   grafana      Up 5 minutes                0.0.0.0:3000->3000/tcp, \[::]:3000->3000/tcp
-
-assignment2-part2-compose-prometheus-1 prometheus  Up 5 minutes                0.0.0.0:9090->9090/tcp, \[::]:9090->9090/tcp
-
-assignment2-part2-compose-web-1       web          Up 20 hours                 0.0.0.0:8002->5000/tcp, \[::]:8002->5000/tcp
-
-assignment2-part2-compose-web-2       web          Up 33 minutes               0.0.0.0:8003->5000/tcp, \[::]:8003->5000/tcp
-
-assignment2-part2-compose-web-3       web          Up 33 minutes               0.0.0.0:8004->5000/tcp, \[::]:8004->5000/tcp
+!\[scale 8003](screenshots/scale-8003.png)
 
 
 
-
-
-Prometheus targets (http://localhost:9090/targets):
-
-
-
-\- cadvisor: 1/1 up
-
-\- prometheus: 1/1 up
-
-\- web: 3/3 up (172.18.0.5:5000, 172.18.0.3:5000, 172.18.0.4:5000)
+!\[scale 8004](screenshots/scale-8004.png)
 
 
 
-
-
-Screenshot: screenshots/prometheus-targets.png
-
-
-
-Grafana setup:
+\## 8. Monitoring Strategy (Prometheus + Grafana)
 
 
 
-\- Grafana http://localhost:3000 par khula (login admin).
-
-\- Data source: Prometheus, URL http://prometheus:9090, Save \& test successful
-
-\- Dashboard ID 14282 (cAdvisor)  
-
-\-
-
-Screenshots: screenshots/grafana-datasource.png, screenshots/grafana-import-nodata.png, screenshots/grafana-dashboard.png, screenshots/prometheus-targets.png, screenshots/prometheus-web-requests.png, screenshots/prometheus-memory.png
+\*\*Description:\*\* Three tools were added: \*\*cAdvisor\*\* (CPU and memory metrics of the containers), \*\*Prometheus\*\* (collects the metrics) and \*\*Grafana\*\* (shows graphs and dashboards). The web app also exposes its own `web\_requests\_total` counter on `/metrics`.
 
 
 
+\*\*File:\*\* `monitoring/prometheus.yml`
 
 
 
+```yaml
+
+global:
+
+&#x20; scrape\_interval: 15s
+
+
+
+scrape\_configs:
+
+&#x20; - job\_name: prometheus
+
+&#x20;   static\_configs:
+
+&#x20;     - targets: \['localhost:9090']
+
+
+
+&#x20; - job\_name: web
+
+&#x20;   dns\_sd\_configs:
+
+&#x20;     - names: \['web']
+
+&#x20;       type: A
+
+&#x20;       port: 5000
+
+
+
+&#x20; - job\_name: cadvisor
+
+&#x20;   static\_configs:
+
+&#x20;     - targets: \['cadvisor:8080']
+
+```
+
+
+
+In the `web` job, `dns\_sd\_configs` automatically discovers all scaled instances of the web service through DNS.
+
+
+
+\*\*Services added to `docker-compose.yml`:\*\*
+
+
+
+```yaml
+
+&#x20; cadvisor:
+
+&#x20;   image: gcr.io/cadvisor/cadvisor:v0.49.1
+
+&#x20;   volumes:
+
+&#x20;     - /:/rootfs:ro
+
+&#x20;     - /var/run:/var/run:ro
+
+&#x20;     - /sys:/sys:ro
+
+&#x20;     - /var/lib/docker/:/var/lib/docker:ro
+
+&#x20;   ports:
+
+&#x20;     - "8080:8080"
+
+&#x20;   networks:
+
+&#x20;     - app\_network
+
+
+
+&#x20; prometheus:
+
+&#x20;   image: prom/prometheus
+
+&#x20;   volumes:
+
+&#x20;     - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+
+&#x20;   ports:
+
+&#x20;     - "9090:9090"
+
+&#x20;   networks:
+
+&#x20;     - app\_network
+
+
+
+&#x20; grafana:
+
+&#x20;   image: grafana/grafana
+
+&#x20;   ports:
+
+&#x20;     - "3000:3000"
+
+&#x20;   volumes:
+
+&#x20;     - grafana\_data:/var/lib/grafana
+
+&#x20;   depends\_on:
+
+&#x20;     - prometheus
+
+&#x20;   networks:
+
+&#x20;     - app\_network
+
+```
+
+
+
+A `grafana\_data:` entry was also added to the `volumes:` section at the bottom of the file.
+
+
+
+\*\*Command:\*\* start the monitoring services and keep three web instances
+
+
+
+```
+
+docker compose up -d --scale web=3
+
+```
+
+
+
+\*\*Output:\*\*
+
+
+
+```
+
+\[+] up 35/35
+
+&#x20;✔ Image prom/prometheus                             Pulled    133.8s
+
+&#x20;✔ Image gcr.io/cadvisor/cadvisor:v0.49.1            Pulled    9.0s
+
+&#x20;✔ Image grafana/grafana                             Pulled    128.9s
+
+&#x20;✔ Container assignment2-part2-compose-web-1         Running   0.0s
+
+&#x20;✔ Container assignment2-part2-compose-web-2         Running   0.0s
+
+&#x20;✔ Container assignment2-part2-compose-web-3         Running   0.0s
+
+&#x20;✔ Container assignment2-part2-compose-db-1          Running   0.0s
+
+&#x20;✔ Volume assignment2-part2-compose\_grafana\_data     Created   0.0s
+
+&#x20;✔ Container assignment2-part2-compose-cadvisor-1    Started   3.1s
+
+&#x20;✔ Container assignment2-part2-compose-prometheus-1  Started   3.2s
+
+&#x20;✔ Container assignment2-part2-compose-grafana-1     Started   0.6s
+
+```
+
+
+
+\*\*Command:\*\* check that all services are up
+
+
+
+```
+
+docker compose ps --format "table {{.Name}}\\t{{.Service}}\\t{{.Status}}\\t{{.Ports}}"
+
+```
+
+
+
+\*\*Output:\*\*
+
+
+
+```
+
+NAME                                    SERVICE      STATUS                   PORTS
+
+assignment2-part2-compose-cadvisor-1    cadvisor     Up 5 minutes (healthy)   0.0.0.0:8080->8080/tcp, \[::]:8080->8080/tcp
+
+assignment2-part2-compose-db-1          db           Up 20 hours              5432/tcp
+
+assignment2-part2-compose-grafana-1     grafana      Up 5 minutes             0.0.0.0:3000->3000/tcp, \[::]:3000->3000/tcp
+
+assignment2-part2-compose-prometheus-1  prometheus   Up 5 minutes             0.0.0.0:9090->9090/tcp, \[::]:9090->9090/tcp
+
+assignment2-part2-compose-web-1         web          Up 20 hours              0.0.0.0:8002->5000/tcp, \[::]:8002->5000/tcp
+
+assignment2-part2-compose-web-2         web          Up 33 minutes            0.0.0.0:8003->5000/tcp, \[::]:8003->5000/tcp
+
+assignment2-part2-compose-web-3         web          Up 33 minutes            0.0.0.0:8004->5000/tcp, \[::]:8004->5000/tcp
+
+```
+
+
+
+\### Health monitoring (Prometheus targets)
+
+
+
+On `http://localhost:9090/targets` all three jobs are \*\*UP\*\*: `cadvisor` 1/1, `prometheus` 1/1 and `web` 3/3 (all three web instances). This is the proof of health monitoring.
+
+
+
+!\[prometheus targets](screenshots/prometheus-targets.png)
+
+
+
+\### Prometheus queries
+
+
+
+I first sent some requests to the web app so that the counters increase, and then ran `web\_requests\_total` in the Prometheus query box. The result shows the request count of every web instance separately.
+
+
+
+!\[web requests total](screenshots/prometheus-web-requests.png)
+
+
+
+The query `container\_memory\_usage\_bytes` shows the memory usage of the containers as reported by cAdvisor.
+
+
+
+!\[container memory](screenshots/prometheus-memory.png)
+
+
+
+\### Grafana
+
+
+
+\- Grafana was opened at `http://localhost:3000` (login `admin`).
+
+\- Data source: \*\*Prometheus\*\*, URL `http://prometheus:9090`. \*\*Save \& test\*\* was successful.
+
+
+
+!\[grafana data source](screenshots/grafana-datasource.png)
+
+
+
+\- \*\*What did not work:\*\* the cAdvisor dashboard (ID `14282`) was imported, but all of its panels showed "No data" on Windows with Docker Desktop. This is an old dashboard that depends on cAdvisor labels which are not available in this environment.
+
+
+
+!\[grafana import no data](screenshots/grafana-import-nodata.png)
+
+
+
+\- \*\*What worked:\*\* I created my own panel with the query `sum(rate(web\_requests\_total\[1m]))`. It shows the request rate of the web app: the line rises while traffic is being generated and falls back afterwards. The dashboard was saved as `Web Monitoring`.
+
+
+
+!\[grafana dashboard](screenshots/grafana-dashboard.png)
+
+
+
+\## Conclusion
+
+
+
+What I learned from this assignment:
+
+
+
+\- \*\*Compose networking:\*\* both services are attached to the custom network `app\_network`, so they find each other by service name (for example the web app reaches the database as `db`).
+
+\- \*\*Volumes and backups:\*\* the `db\_data` volume keeps the data separate from the container, and a `pg\_dump` backup lets the data be restored even after the volume has been deleted.
+
+\- \*\*Scaling:\*\* `docker compose up --scale web=3` runs several instances of one service, and `/whoami` proved that they are separate containers.
+
+\- \*\*Monitoring:\*\* Prometheus collected metrics from all three web instances and from cAdvisor, and Grafana was used to draw a graph of the request rate.
 
