@@ -1,0 +1,9 @@
+[+] Building 36.6s (20/20) FINISHED
+... (beech ki build lines)
+[+] up 6/6
+ ✔ Image assignment2-part2-compose-db            Built     41.0s
+ ✔ Image assignment2-part2-compose-web           Built     41.1s
+ ✔ Network assignment2-part2-compose_app_network Created   0.0s
+ ✔ Volume assignment2-part2-compose_db_data      Created   0.0s
+ ✔ Container assignment2-part2-compose-db-1      Started   0.6s
+ ✔ Container assignment2-part2-compose-web-1     Started   0.4s

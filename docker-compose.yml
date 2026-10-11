@@ -1,0 +1,61 @@
+services:
+  web:
+    build: ./web
+    ports:
+      - "8000-8010:5000"
+    environment:
+      - DB_HOST=db
+      - DB_NAME=appdb
+      - DB_USER=appuser
+      - DB_PASSWORD=apppass
+    depends_on:
+      - db
+    networks:
+      - app_network
+
+  db:
+    build: ./db
+    volumes:
+      - db_data:/var/lib/postgresql/data
+      - ./backups:/backups
+    networks:
+      - app_network
+
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:v0.49.1
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+    ports:
+      - "8080:8080"
+    networks:
+      - app_network
+
+  prometheus:
+    image: prom/prometheus
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "9090:9090"
+    networks:
+      - app_network
+
+  grafana:
+    image: grafana/grafana
+    ports:
+      - "3000:3000"
+    volumes:
+      - grafana_data:/var/lib/grafana
+    depends_on:
+      - prometheus
+    networks:
+      - app_network
+
+volumes:
+  db_data:
+  grafana_data:
+
+networks:
+  app_network:
